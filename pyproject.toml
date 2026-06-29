@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meadows-tui"
+dynamic = ["version"]
+description = "MEADOWS terminal UI client: a Textual-based TUI chat client for MEADOWS."
+readme = "README.md"
+requires-python = ">=3.12"
+license-expression = "MIT"
+authors = [{ name = "MEADOWS" }]
+dependencies = [
+    "meadows-protocol",
+    "meadows-client",
+    "click>=8.1.0",
+    "textual>=1.0.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+meadows-tui = "meadows.tui.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "hatch",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+    "ruff==0.14.9",
+]
+
+[tool.hatch.version]
+path = "src/meadows/tui/__about__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/meadows"]
+
+[tool.uv.sources]
+meadows-protocol = { path = "../meadows-protocol", editable = true }
+meadows-client = { path = "../meadows-client", editable = true }
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "Q", "A", "SIM", "ARG", "PTH", "RUF", "C90", "N", "YTT"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
