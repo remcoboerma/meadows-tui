@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import Input, Button, Static
@@ -25,8 +27,8 @@ class ChatInput(Widget):
     quoted_id: reactive[str | None] = reactive(None)
     theme: reactive[str] = reactive("dark")
 
-    def __init__(self, theme: str = "dark") -> None:
-        super().__init__()
+    def __init__(self, theme: str = "dark", **kwargs: Any) -> None:
+        super().__init__(**kwargs)
         self.theme = theme
 
     def compose(self) -> ComposeResult:
