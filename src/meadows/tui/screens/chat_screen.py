@@ -90,10 +90,10 @@ class ChatScreen(Screen):
         self._apply_theme()
         self.refresh()
 
-    def handle_authenticated(self, event: Authenticated) -> None:
+    async def handle_authenticated(self, event: Authenticated) -> None:
         data = event.data
         sidebar = self.query_one(Sidebar)
-        sidebar.set_groups(data.get("groups", []))
+        await sidebar.set_groups(data.get("groups", []))
 
         bots = data.get("bots", [])
         sidebar.set_bots(bots)
@@ -202,12 +202,12 @@ class ChatScreen(Screen):
     def handle_delete_group(self, event: DeleteGroup) -> None:
         asyncio.ensure_future(self._bridge.delete_group(event.group_id))  # noqa: RUF006
 
-    def handle_joined_group(self, event: JoinedGroup) -> None:
+    async def handle_joined_group(self, event: JoinedGroup) -> None:
         data = event.data
         self._switch_group(data.get("group_id", ""))
         sidebar = self.query_one(Sidebar)
         if "members" in data:
-            sidebar.set_users(data["members"])
+            await sidebar.set_users(data["members"])
         if "thread" in data:
             thread = data["thread"]
             for msg in thread:
@@ -224,19 +224,19 @@ class ChatScreen(Screen):
     def handle_user_left(self, event: UserLeft) -> None:
         pass
 
-    def handle_members_updated(self, event: MembersUpdated) -> None:
+    async def handle_members_updated(self, event: MembersUpdated) -> None:
         data = event.data
         sidebar = self.query_one(Sidebar)
-        sidebar.set_users(data.get("members", []))
+        await sidebar.set_users(data.get("members", []))
 
-    def handle_group_created(self, event: GroupCreated) -> None:
+    async def handle_group_created(self, event: GroupCreated) -> None:
         sidebar = self.query_one(Sidebar)
-        sidebar.add_group(event.data)
+        await sidebar.add_group(event.data)
 
-    def handle_group_deleted(self, event: GroupDeleted) -> None:
+    async def handle_group_deleted(self, event: GroupDeleted) -> None:
         gid = event.data.get("group_id", "")
         sidebar = self.query_one(Sidebar)
-        sidebar.remove_group(gid)
+        await sidebar.remove_group(gid)
 
     def handle_bot_list(self, event: BotList) -> None:
         sidebar = self.query_one(Sidebar)

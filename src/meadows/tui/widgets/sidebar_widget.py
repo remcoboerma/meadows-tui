@@ -61,22 +61,22 @@ class Sidebar(Widget):
             with VerticalScroll(id="bots-list", classes="bots-list"):
                 pass
 
-    def set_groups(self, groups: list[dict[str, Any]]) -> None:
+    async def set_groups(self, groups: list[dict[str, Any]]) -> None:
         self._groups = {g.get("id", g.get("group_id", "")): g for g in groups}
-        self._refresh_groups()
+        await self._refresh_groups()
 
-    def add_group(self, group_data: dict[str, Any]) -> None:
+    async def add_group(self, group_data: dict[str, Any]) -> None:
         gid = group_data.get("id", group_data.get("group_id", ""))
         self._groups[gid] = group_data
-        self._refresh_groups()
+        await self._refresh_groups()
 
-    def remove_group(self, group_id: str) -> None:
+    async def remove_group(self, group_id: str) -> None:
         self._groups.pop(group_id, None)
-        self._refresh_groups()
+        await self._refresh_groups()
 
-    def _refresh_groups(self) -> None:
+    async def _refresh_groups(self) -> None:
         container = self.query_one("#groups-list", VerticalScroll)
-        container.remove_children()
+        await container.remove_children()
         for gid, gdata in sorted(self._groups.items()):
             name = gdata.get("name", gid)
             count = gdata.get("member_count", "")
@@ -86,30 +86,30 @@ class Sidebar(Widget):
                 cls += " active-group"
             widget = Static(label, classes=cls, id=f"group-{gid}")
             widget.data_id = gid
-            container.mount(widget)
+            await container.mount(widget)
 
-    def set_users(self, users: list[dict[str, Any]]) -> None:
+    async def set_users(self, users: list[dict[str, Any]]) -> None:
         self._user_list = [u.get("username", u.get("user_id", "")) for u in users]
-        self._refresh_users()
+        await self._refresh_users()
 
-    def _refresh_users(self) -> None:
+    async def _refresh_users(self) -> None:
         container = self.query_one("#users-list", VerticalScroll)
-        container.remove_children()
+        await container.remove_children()
         for uname in self._user_list:
-            container.mount(Static(uname, classes="user-item"))
+            await container.mount(Static(uname, classes="user-item"))
 
-    def set_bots(self, bots: list[dict[str, Any]]) -> None:
+    async def set_bots(self, bots: list[dict[str, Any]]) -> None:
         self._bot_list = bots
-        self._refresh_bots()
+        await self._refresh_bots()
 
-    def _refresh_bots(self) -> None:
+    async def _refresh_bots(self) -> None:
         container = self.query_one("#bots-list", VerticalScroll)
-        container.remove_children()
+        await container.remove_children()
         for bot in self._bot_list:
             name = bot.get("name", "")
             desc = bot.get("description", "")
             label = f"{name}" + (f": {desc[:40]}..." if desc else "")
-            container.mount(Static(label, classes="bot-item"))
+            await container.mount(Static(label, classes="bot-item"))
 
     def on_static_clicked(self, event: Static.Clicked) -> None:
         widget = event.static
