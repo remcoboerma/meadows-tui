@@ -240,13 +240,6 @@ class MeadowsTUIApp(App):
         self._last_sigint = now
         self.call_from_thread(self.action_quit)
 
-    def _handle_sigint(self, _sig: int, _frame) -> None:
-        now = time.monotonic()
-        if now - self._last_sigint < 1.0:
-            os._exit(1)
-        self._last_sigint = now
-        self.call_from_thread(self.action_quit)
-
     def get_theme_colors(self) -> dict[str, str]:
         return get_theme(self._theme_name)
 
