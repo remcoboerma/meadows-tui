@@ -82,7 +82,7 @@ class ChatScreen(Screen):
         mlist.styles.background = colors["surface"]
         header.styles.background = colors["surface-alt"]
         header.styles.color = colors["text"]
-        header.styles.border_bottom = f"solid {border}"
+        header.styles.border_bottom = ("solid", border)
         footer.styles.background = colors["surface-alt"]
         footer.styles.color = colors["text"]
 
