@@ -17,7 +17,7 @@ from meadows.tui.config import TUIConfig
 from meadows.tui.themes import get_theme
 from meadows.tui.client_bridge import (
     ClientBridge,
-    ConnectionFailed,
+    ConnectionFailedError,
     Authenticated,
     AuthFailed,
     ServerError,
@@ -251,6 +251,12 @@ class MeadowsTUIApp(App):
         return get_theme(self._theme_name)
 
     def on_mount(self) -> None:
+        if self._config.token:
+            logger.info("token provided via config, auto-connecting")
+            self.post_message(AuthRequest(token=self._config.token))
+        elif self._config.jwt_secret and self._config.username:
+            logger.info("jwt_secret + username provided, auto-connecting")
+            self.post_message(AuthRequest(username=self._config.username, secret=self._config.jwt_secret))
         self.push_screen(AuthScreen(self._config.server_url, theme=self._theme_name))
 
     def on_auth_request(self, event: AuthRequest) -> None:
@@ -276,7 +282,7 @@ class MeadowsTUIApp(App):
                             system_name=self._config.system_name,
                         )
                     )
-            except ConnectionFailed as exc:
+            except ConnectionFailedError as exc:
                 logger.error("connection failed: %s", exc)
                 current = self.screen
                 if isinstance(current, AuthScreen):

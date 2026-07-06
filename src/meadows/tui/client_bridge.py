@@ -57,7 +57,7 @@ class ClientBridge:
             logger.debug("decoded claims: %s", claims_dict)
         except Exception as exc:
             logger.error("failed to decode token: %s", exc)
-            raise ConnectionFailed(f"Invalid JWT: {exc}") from exc
+            raise ConnectionFailedError(f"Invalid JWT: {exc}") from exc
 
         claims = JWTClaims(**claims_dict)
         logger.debug("parsed claims: sub=%s role=%s", claims.sub, claims.role)
@@ -68,22 +68,10 @@ class ClientBridge:
         self._mc = MeadowClient(
             server_url=self._server_url,
             claims=claims,
-            jwt_secret=b"",
+            token=token,
         )
         self._register_handlers()
         self._register_sio_logging()
-
-        original = self._mc.sio.emit
-
-        async def patched_emit(event, data, namespace=None):
-            nonlocal token
-            if event == EventName.AUTHENTICATE.value:
-                old = data.get("token", "")[:20]
-                data["token"] = token
-                logger.debug("patched authenticate event: replaced token (was %s...) with user token", old)
-            return await original(event, data, namespace=namespace)
-
-        self._mc.sio.emit = patched_emit
 
         logger.info("connecting socket.io to %s/chat", self._server_url)
         try:
@@ -91,7 +79,7 @@ class ClientBridge:
             logger.info("socket.io transport connected, awaiting auth...")
         except Exception as exc:
             logger.error("socket.io connect failed: %s", exc)
-            raise ConnectionFailed(f"Socket.IO connect failed: {exc}") from exc
+            raise ConnectionFailedError(f"Socket.IO connect failed: {exc}") from exc
 
     async def connect_with_secret(self, username: str, jwt_secret: str) -> None:
         from meadows.protocol.jwt import build_claims, JWTRole
@@ -113,7 +101,7 @@ class ClientBridge:
             logger.info("socket.io transport connected, awaiting auth for %s...", username)
         except Exception as exc:
             logger.error("socket.io connect failed: %s", exc)
-            raise ConnectionFailed(f"Socket.IO connect failed: {exc}") from exc
+            raise ConnectionFailedError(f"Socket.IO connect failed: {exc}") from exc
 
     def _register_sio_logging(self) -> None:
         if not self._mc:
@@ -278,7 +266,7 @@ class ClientBridge:
             await self._mc.disconnect()
 
 
-class ConnectionFailed(Exception):
+class ConnectionFailedError(Exception):
     pass
 
 
