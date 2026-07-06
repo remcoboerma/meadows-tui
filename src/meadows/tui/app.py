@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
-import sys
 import time
 from typing import ClassVar
 
@@ -221,9 +219,7 @@ class MeadowsTUIApp(App):
         super().__init__()
         self._config = config
         self._bridge = ClientBridge(self, config.server_url)
-        self._last_sigint: float = 0.0
-
-        signal.signal(signal.SIGINT, self._handle_sigint)
+        self._last_quit: float = 0.0
 
         theme_name = config.theme
         if theme_name == "auto":
@@ -231,19 +227,13 @@ class MeadowsTUIApp(App):
             theme_name = "light" if "15;0" in term else "dark"
         self._theme_name = theme_name
 
-    TERM_RESET = "\033[?1049l\033[?25h\033[?1000l\033[?1003l\033[?1015l\033[?1006l"
-
-    def _restore_terminal(self) -> None:
-        sys.stderr.write(self.TERM_RESET)
-        sys.stderr.flush()
-
-    def _handle_sigint(self, _sig: int, _frame) -> None:
+    def action_quit(self) -> None:
         now = time.monotonic()
-        if now - self._last_sigint < 1.0:
-            self._restore_terminal()
-            os._exit(1)
-        self._last_sigint = now
-        self.call_from_thread(self.action_quit)
+        if now - self._last_quit < 1.0:
+            os._exit(0)
+        self._last_quit = now
+        asyncio.ensure_future(self._bridge.disconnect())  # noqa: RUF006
+        super().action_quit()
 
     def get_theme_colors(self) -> dict[str, str]:
         return get_theme(self._theme_name)
@@ -308,7 +298,9 @@ class MeadowsTUIApp(App):
         if isinstance(screen, ChatScreen):
             handler = getattr(screen, method, None)
             if handler:
-                handler(event) if not hasattr(handler, "__await__") else await handler(event)
+                result = handler(event)
+                if asyncio.iscoroutine(result):
+                    await result
 
     async def on_authenticated(self, event: Authenticated) -> None:
         await self._forward_to_chat(Authenticated, "handle_authenticated", event)
@@ -379,12 +371,3 @@ class MeadowsTUIApp(App):
     @ignore_no_match
     def _focus_widget(self, screen: ChatScreen, selector: str) -> None:
         screen.query_one(selector).focus()
-
-    def action_quit(self) -> None:
-        now = time.monotonic()
-        if now - self._last_sigint < 1.0:
-            self._restore_terminal()
-            os._exit(1)
-        self._last_sigint = now
-        self._quit_task = asyncio.create_task(self._bridge.disconnect())
-        super().action_quit()

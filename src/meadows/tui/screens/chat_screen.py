@@ -90,45 +90,51 @@ class ChatScreen(Screen):
         self._apply_theme()
         self.refresh()
 
+    def _update_group_header(self, text: str) -> None:
+        gh = self.query_one("#group-header", Static)
+        colors = get_theme(self.theme)
+        status = "connected" if self._bridge.connected else "disconnected"
+        status_color = colors["secondary"] if self._bridge.connected else colors["warning"]
+        gh.update(f"  [{colors['primary']}]#{self.current_group}[/]  [{status_color}]{status}[/]  {text}")
+
     async def handle_authenticated(self, event: Authenticated) -> None:
         data = event.data
         sidebar = self.query_one(Sidebar)
         await sidebar.set_groups(data.get("groups", []))
 
         bots = data.get("bots", [])
-        sidebar.set_bots(bots)
+        await sidebar.set_bots(bots)
 
-        gh = self.query_one("#group-header", Static)
-        gh.update(f"  [{data.get('username', '')}] — connected")
+        self._update_group_header(f"[{data.get('username', '')}] — connected")
 
-        self._join_first_group(data.get("groups", []))
-        loading = self.query_one("#loading-msg", Static)
-        loading.remove()
+        await self._join_first_group(data.get("groups", []))
+        try:
+            loading = self.query_one("#loading-msg", Static)
+            loading.remove()
+        except Exception:
+            pass
 
-    def _join_first_group(self, groups: list[dict[str, Any]]) -> None:
+    async def _join_first_group(self, groups: list[dict[str, Any]]) -> None:
         for g in groups:
             gid = g.get("id", g.get("group_id", ""))
             if gid == "general":
                 self.current_group = "general"
                 sidebar = self.query_one(Sidebar)
                 sidebar.active_group = "general"
-                self._switch_group(gid)
+                await self._switch_group(gid)
                 break
 
-    def _switch_group(self, group_id: str) -> None:
+    async def _switch_group(self, group_id: str) -> None:
         self.current_group = group_id
         mlist = self.query_one("#message-list", VerticalScroll)
-        mlist.remove_children()
+        await mlist.remove_children()
         self._current_group_messages = []
-
-        gh = self.query_one("#group-header", Static)
-        colors = get_theme(self.theme)
-        gh.update(f"  [{colors['primary']}]#{group_id}[/]")
+        self._update_group_header("")
 
         loading = Static(f"Joined #{group_id}", id="loading-msg")
-        mlist.mount(loading)
+        await mlist.mount(loading)
 
-    def _add_message(self, data: dict[str, Any]) -> None:
+    async def _add_message(self, data: dict[str, Any]) -> None:
         msg_group = data.get("group_id", "")
         if msg_group != self.current_group:
             return
@@ -141,15 +147,15 @@ class ChatScreen(Screen):
         mw = MessageWidget(data, is_own=is_own, theme=self.theme)
 
         mlist = self.query_one("#message-list", VerticalScroll)
-        mlist.mount(mw)
+        await mlist.mount(mw)
         self._current_group_messages.append(mw)
         self._message_widgets[data.get("id", "")] = mw
-
-        mlist.scroll_end(animate=False)
 
         loading = mlist.query("#loading-msg")
         if loading:
             loading[0].remove()
+
+        mlist.scroll_end(animate=False)
 
     def _remove_message(self, data: dict[str, Any]) -> None:
         mid = data.get("message_id", "")
@@ -158,8 +164,8 @@ class ChatScreen(Screen):
             widget.removed = True
             widget._update_content()
 
-    def handle_chat_message(self, event: ChatMessage) -> None:
-        self._add_message(event.data)
+    async def handle_chat_message(self, event: ChatMessage) -> None:
+        await self._add_message(event.data)
 
     def handle_user_typing(self, event: UserTyping) -> None:
         data = event.data
@@ -173,13 +179,12 @@ class ChatScreen(Screen):
 
     def _update_typing_indicator(self) -> None:
         users = self._typing_users.get(self.current_group, [])
-        gh = self.query_one("#group-header", Static)
         colors = get_theme(self.theme)
         typing_text = ""
         if users:
             names = ", ".join(users[:3])
             typing_text = f"  [{colors['text-muted']}]{names} typing...[/]"
-        gh.update(f"  [{colors['primary']}]#{self.current_group}[/]{typing_text}")
+        self._update_group_header(typing_text)
 
     def _send_message(self, event: SendMessage) -> None:
         self._send_task = asyncio.ensure_future(
@@ -191,10 +196,16 @@ class ChatScreen(Screen):
         )
 
     def handle_group_selected(self, event: GroupSelected) -> None:
-        self._switch_group(event.group_id)
+        asyncio.ensure_future(self._switch_group(event.group_id))  # noqa: RUF006
 
     def handle_create_group(self, event: CreateGroup) -> None:
-        asyncio.ensure_future(self._bridge.create_group(event.group_id, name=event.name))  # noqa: RUF006
+        asyncio.ensure_future(self._do_create_group(event))  # noqa: RUF006
+
+    async def _do_create_group(self, event: CreateGroup) -> None:
+        try:
+            await self._bridge.create_group(event.group_id, name=event.name)
+        except Exception as exc:
+            self._update_group_header(f"[error] create group failed: {exc}[/]")
 
     def handle_leave_group(self, event: LeaveGroup) -> None:
         asyncio.ensure_future(self._bridge.leave_group(event.group_id))  # noqa: RUF006
@@ -204,19 +215,19 @@ class ChatScreen(Screen):
 
     async def handle_joined_group(self, event: JoinedGroup) -> None:
         data = event.data
-        self._switch_group(data.get("group_id", ""))
+        await self._switch_group(data.get("group_id", ""))
         sidebar = self.query_one(Sidebar)
         if "members" in data:
             await sidebar.set_users(data["members"])
         if "thread" in data:
             thread = data["thread"]
             for msg in thread:
-                self._add_message(msg)
+                await self._add_message(msg)
 
-    def handle_left_group(self, event: LeftGroup) -> None:
+    async def handle_left_group(self, event: LeftGroup) -> None:
         gid = event.data.get("group_id", "")
         sidebar = self.query_one(Sidebar)
-        sidebar.remove_group(gid)
+        await sidebar.remove_group(gid)
 
     def handle_user_joined(self, event: UserJoined) -> None:
         pass
@@ -240,7 +251,7 @@ class ChatScreen(Screen):
 
     def handle_bot_list(self, event: BotList) -> None:
         sidebar = self.query_one(Sidebar)
-        sidebar.set_bots(event.data.get("bots", []))
+        asyncio.ensure_future(sidebar.set_bots(event.data.get("bots", [])))  # noqa: RUF006
 
     def handle_message_removed(self, event: MessageRemoved) -> None:
         self._remove_message(event.data)
