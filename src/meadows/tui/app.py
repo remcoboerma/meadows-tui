@@ -98,8 +98,13 @@ class MeadowsTUIApp(App):
         height: 1fr;
     }
 
-    .sidebar {
+    #sidebar {
         width: 24;
+        height: 100%;
+    }
+
+    .sidebar {
+        width: 100%;
         height: 100%;
         background: $surface;
         overflow-y: auto;
