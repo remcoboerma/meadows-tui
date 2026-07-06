@@ -77,6 +77,18 @@ meadows-tui --server http://chat.example.com:8080 --token eyJ...
 | `MEADOWS_LOG_LEVEL` | `WARNING` | logging verbosity |
 | `MEADOWS_SYSTEM_NAME` | `MEADOWS Chat` | display name |
 
+## Development
+
+```bash
+uv pip install -e ".[dev]"
+uv pip install edwh
+
+uv run edwh local.setup   # check/ensure env vars
+uv run edwh local.test    # uv run pytest -q
+uv run edwh local.lint    # uv run ruff check src tests
+uv run edwh local.fmt     # uv run ruff format src tests && ruff check --fix src tests
+```
+
 ## Features
 
 - Multi-group chat with sidebar navigation
