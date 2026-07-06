@@ -41,8 +41,8 @@ class Sidebar(Widget):
     theme: reactive[str] = reactive("dark")
     active_group: reactive[str] = reactive("general")
 
-    def __init__(self, theme: str = "dark") -> None:
-        super().__init__()
+    def __init__(self, theme: str = "dark", **kwargs: Any) -> None:
+        super().__init__(**kwargs)
         self.theme = theme
         self._groups: dict[str, Any] = {}
         self._user_list: list[str] = []
