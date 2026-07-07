@@ -15,6 +15,56 @@ from meadows.tui.themes import get_theme
 QUICK_EMOJIS = ["👍", "❤️", "😂", "🎉", "🤔", "👀", "🔥", "💯", "🚀"]
 
 
+def _render_message(data: dict[str, Any], is_own: bool, theme: str) -> str:
+    """Compute the Rich markup string for a message."""
+    colors = get_theme(theme)
+    message_type = data.get("type", "user")
+    removed = data.get("removed", False)
+    is_reaction = data.get("type") == "reaction"
+    is_everyone = data.get("is_everyone", False)
+    username = data.get("username", data.get("bot_name", data.get("user_id", "unknown")))
+    content = data.get("content", "")
+    timestamp = data.get("timestamp", "")
+
+    try:
+        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        time_str = dt.strftime("%H:%M")
+    except (ValueError, TypeError):
+        time_str = timestamp[-8:-3] if len(timestamp) > 8 else ""
+
+    if removed:
+        return f"[{time_str}] {username}: [message removed]"
+
+    if is_reaction:
+        emoji = data.get("emoji", "")
+        return f"  {emoji} reacted to a message"
+
+    label = "bot" if message_type == "bot" else "you" if is_own else ""
+    lines: list[str] = []
+
+    if label:
+        badge_style = "dim bold" if label == "bot" else "bold"
+        lines.append(f"[{time_str}] [{badge_style}]{username}[/] [{colors['primary']}]({label})[/]")
+    else:
+        lines.append(f"[{time_str}] [{colors['text-accent']}]{username}[/]")
+
+    quoted = data.get("quoted_message")
+    if quoted:
+        q_author = quoted.get("author", "")
+        q_content = quoted.get("content", "")
+        if q_author and q_content:
+            quote = q_content[:60] + "..." if len(q_content) > 60 else q_content
+            lines.append(f"  └─ [{colors['text-muted']}]re: {q_author}: {quote}[/]")
+
+    if is_everyone:
+        lines.append(f"  [{colors['warning']}]📢 @everyone[/]")
+
+    body = content.replace("\n", "\n  ")
+    lines.append(f"  {body}")
+
+    return "\n".join(lines)
+
+
 class MessageWidget(Static):
     message_id: reactive[str] = reactive("")
     group_id: reactive[str] = reactive("")
@@ -22,84 +72,24 @@ class MessageWidget(Static):
     content: reactive[str] = reactive("")
     timestamp: reactive[str] = reactive("")
     removed: reactive[bool] = reactive(False)
-    is_everyone: reactive[bool] = reactive(False)
-    is_reaction: reactive[bool] = reactive(False)
-    emoji: reactive[str | None] = reactive(None)
-    target_message_id: reactive[str | None] = reactive(None)
-    quoted_author: reactive[str | None] = reactive(None)
-    quoted_content: reactive[str | None] = reactive(None)
     is_own: reactive[bool] = reactive(False)
     message_type: reactive[str] = reactive("user")
 
     def __init__(self, data: dict[str, Any], is_own: bool = False, theme: str = "dark") -> None:
-        super().__init__("")
         self._data = data
         self._theme = theme
+        super().__init__(_render_message(data, is_own, theme))
         self.message_id = data.get("id", "")
         self.group_id = data.get("group_id", "")
         self.username = data.get("username", data.get("bot_name", data.get("user_id", "unknown")))
         self.content = data.get("content", "")
         self.timestamp = data.get("timestamp", "")
         self.removed = data.get("removed", False)
-        self.is_everyone = data.get("is_everyone", False)
         self.message_type = data.get("type", "user")
         self.is_own = is_own
 
-        if data.get("type") == "reaction":
-            self.is_reaction = True
-            self.emoji = data.get("emoji", "")
-            self.target_message_id = data.get("target_message_id", "")
-
-        quoted = data.get("quoted_message")
-        if quoted:
-            self.quoted_author = quoted.get("author", "")
-            self.quoted_content = quoted.get("content", "")
-
-        self._update_content()
-
-    def watch_theme(self, _theme: str) -> None:
-        self._update_content()
-
-    def _format_timestamp(self) -> str:
-        try:
-            dt = datetime.fromisoformat(self.timestamp.replace("Z", "+00:00"))
-            return dt.strftime("%H:%M")
-        except (ValueError, TypeError):
-            return self.timestamp[-8:-3] if len(self.timestamp) > 8 else ""
-
     def _update_content(self) -> None:
-        colors = get_theme(self._theme)
-        time_str = self._format_timestamp()
-        label = "bot" if self.message_type == "bot" else "you" if self.is_own else ""
-
-        if self.removed:
-            self.styles.text_style = "strike"
-            self.update(f"[{time_str}] {self.username}: [message removed]")
-            return
-
-        if self.is_reaction:
-            self.update(f"  {self.emoji} reacted to a message")
-            return
-
-        lines = []
-
-        if label:
-            badge_style = "dim bold" if label == "bot" else "bold"
-            lines.append(f"[{time_str}] [{badge_style}]{self.username}[/] [{colors['primary']}]({label})[/]")
-        else:
-            lines.append(f"[{time_str}] [{colors['text-accent']}]{self.username}[/]")
-
-        if self.quoted_author and self.quoted_content:
-            quote = self.quoted_content[:60] + "..." if len(self.quoted_content) > 60 else self.quoted_content
-            lines.append(f"  └─ [{colors['text-muted']}]re: {self.quoted_author}: {quote}[/]")
-
-        if self.is_everyone:
-            lines.append(f"  [{colors['warning']}]📢 @everyone[/]")
-
-        body = self.content.replace("\n", "\n  ")
-        lines.append(f"  {body}")
-
-        self.update("\n".join(lines))
+        self.update(_render_message(self._data, self.is_own, self._theme))
 
 
 class ReactionsClicked(Message):

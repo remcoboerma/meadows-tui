@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 from typing import ClassVar
 
 from textual.app import App
@@ -219,6 +220,8 @@ class MeadowsTUIApp(App):
         self._config = config
         self._bridge = ClientBridge(self, config.server_url)
         self._last_quit: float = 0.0
+
+        signal.signal(signal.SIGINT, lambda *_: os._exit(0))
 
         theme_name = config.theme
         if theme_name == "auto":

@@ -196,7 +196,11 @@ class ChatScreen(Screen):
         )
 
     def handle_group_selected(self, event: GroupSelected) -> None:
-        asyncio.ensure_future(self._switch_group(event.group_id))  # noqa: RUF006
+        asyncio.ensure_future(self._do_group_selected(event.group_id))  # noqa: RUF006
+
+    async def _do_group_selected(self, group_id: str) -> None:
+        await self._switch_group(group_id)
+        await self._bridge.join_group(group_id)
 
     def handle_create_group(self, event: CreateGroup) -> None:
         asyncio.ensure_future(self._do_create_group(event))  # noqa: RUF006
