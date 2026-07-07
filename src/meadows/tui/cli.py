@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 import click
 
 from meadows.tui.config import load_config
@@ -71,10 +70,9 @@ def main(
         theme=theme,
     )
 
-    from meadows.tui.app import MeadowsTUIApp
+    from meadows.tui.app import run_app
 
-    app = MeadowsTUIApp(config=config)
-    app.run()
+    run_app(config)
 
 
 if __name__ == "__main__":

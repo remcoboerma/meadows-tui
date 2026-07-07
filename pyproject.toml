@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "meadows-tui"
 dynamic = ["version"]
-description = "MEADOWS terminal UI client: a Textual-based TUI chat client for MEADOWS."
+description = "MEADOWS terminal UI client: a curses-based TUI chat client for MEADOWS."
 readme = "README.md"
 requires-python = ">=3.12"
 license-expression = "MIT"
@@ -14,8 +14,6 @@ dependencies = [
     "meadows-protocol",
     "meadows-client",
     "click>=8.1.0",
-    "textual>=1.0.0",
-    "rich>=13.0.0",
 ]
 
 [project.scripts]
