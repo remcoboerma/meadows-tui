@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
 from typing import ClassVar
 
 from textual.app import App
@@ -228,12 +227,7 @@ class MeadowsTUIApp(App):
         self._theme_name = theme_name
 
     def action_quit(self) -> None:
-        now = time.monotonic()
-        if now - self._last_quit < 1.0:
-            os._exit(0)
-        self._last_quit = now
-        asyncio.ensure_future(self._bridge.disconnect())  # noqa: RUF006
-        super().action_quit()
+        os._exit(0)
 
     def get_theme_colors(self) -> dict[str, str]:
         return get_theme(self._theme_name)
