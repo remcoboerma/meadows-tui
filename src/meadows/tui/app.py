@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
+import sys
+import termios
 from typing import ClassVar
 
 from textual.app import App
@@ -219,9 +222,12 @@ class MeadowsTUIApp(App):
         super().__init__()
         self._config = config
         self._bridge = ClientBridge(self, config.server_url)
-        self._last_quit: float = 0.0
 
-        signal.signal(signal.SIGINT, lambda *_: os._exit(0))
+        self._saved_termios = None
+        with contextlib.suppress(OSError):
+            self._saved_termios = termios.tcgetattr(sys.stdin)
+
+        signal.signal(signal.SIGINT, lambda *_: self._force_exit())
 
         theme_name = config.theme
         if theme_name == "auto":
@@ -229,8 +235,16 @@ class MeadowsTUIApp(App):
             theme_name = "light" if "15;0" in term else "dark"
         self._theme_name = theme_name
 
-    def action_quit(self) -> None:
+    def _force_exit(self) -> None:
+        if self._saved_termios is not None:
+            with contextlib.suppress(termios.error):
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._saved_termios)
+        sys.stderr.write("\033[?1049l\033[?25h")
+        sys.stderr.flush()
         os._exit(0)
+
+    def action_quit(self) -> None:
+        self._force_exit()
 
     def get_theme_colors(self) -> dict[str, str]:
         return get_theme(self._theme_name)
