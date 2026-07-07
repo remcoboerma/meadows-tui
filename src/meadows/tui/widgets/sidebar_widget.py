@@ -6,6 +6,7 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
+from textual.events import Click
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Static, Input
@@ -111,9 +112,9 @@ class Sidebar(Widget):
             label = f"{name}" + (f": {desc[:40]}..." if desc else "")
             await container.mount(Static(label, classes="bot-item"))
 
-    def on_static_clicked(self, event: Static.Clicked) -> None:
-        widget = event.static
-        if "group-item" in widget.classes:
+    def on_click(self, event: Click) -> None:
+        widget = event.widget
+        if isinstance(widget, Static) and "group-item" in widget.classes:
             gid = getattr(widget, "data_id", None)
             if gid:
                 self.active_group = gid

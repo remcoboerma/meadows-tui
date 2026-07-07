@@ -227,8 +227,6 @@ class MeadowsTUIApp(App):
         with contextlib.suppress(OSError):
             self._saved_termios = termios.tcgetattr(sys.stdin)
 
-        signal.signal(signal.SIGINT, lambda *_: self._force_exit())
-
         theme_name = config.theme
         if theme_name == "auto":
             term = os.environ.get("COLORFGBG", "")
@@ -237,7 +235,7 @@ class MeadowsTUIApp(App):
 
     def _force_exit(self) -> None:
         if self._saved_termios is not None:
-            with contextlib.suppress(termios.error):
+            with contextlib.suppress(OSError):
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._saved_termios)
         sys.stderr.write("\033[?1049l\033[?25h")
         sys.stderr.flush()
@@ -250,6 +248,7 @@ class MeadowsTUIApp(App):
         return get_theme(self._theme_name)
 
     def on_mount(self) -> None:
+        signal.signal(signal.SIGINT, lambda *_: self._force_exit())
         if self._config.token:
             logger.info("token provided via config, auto-connecting")
             self.post_message(AuthRequest(token=self._config.token))
