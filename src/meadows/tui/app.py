@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
-import signal
-import sys
-import termios
 from typing import ClassVar
 
 from textual.app import App
@@ -223,32 +219,20 @@ class MeadowsTUIApp(App):
         self._config = config
         self._bridge = ClientBridge(self, config.server_url)
 
-        self._saved_termios = None
-        with contextlib.suppress(OSError):
-            self._saved_termios = termios.tcgetattr(sys.stdin)
-
         theme_name = config.theme
         if theme_name == "auto":
             term = os.environ.get("COLORFGBG", "")
             theme_name = "light" if "15;0" in term else "dark"
         self._theme_name = theme_name
 
-    def _force_exit(self) -> None:
-        if self._saved_termios is not None:
-            with contextlib.suppress(OSError):
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._saved_termios)
-        sys.stderr.write("\033[?1049l\033[?25h")
-        sys.stderr.flush()
-        os._exit(0)
-
     def action_quit(self) -> None:
-        self._force_exit()
+        self.set_timer(1.0, lambda: os._exit(0))
+        super().action_quit()
 
     def get_theme_colors(self) -> dict[str, str]:
         return get_theme(self._theme_name)
 
     def on_mount(self) -> None:
-        signal.signal(signal.SIGINT, lambda *_: self._force_exit())
         if self._config.token:
             logger.info("token provided via config, auto-connecting")
             self.post_message(AuthRequest(token=self._config.token))
