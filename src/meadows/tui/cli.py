@@ -49,6 +49,13 @@ from meadows.tui.config import load_config
     show_default=True,
     help="Logging verbosity.",
 )
+@click.option(
+    "--debug/--no-debug",
+    envvar="MEADOWS_DEBUG",
+    default=False,
+    show_default=True,
+    help="Enable debug mode: sets log level to DEBUG and dumps connection diagnostics.",
+)
 def main(
     server: str,
     token: str | None,
@@ -56,9 +63,14 @@ def main(
     username: str | None,
     theme: str,
     log_level: str,
+    debug: bool,
 ) -> None:
     """Launch the MEADOWS terminal chat client."""
     import logging
+    import sys
+
+    if debug:
+        log_level = "DEBUG"
 
     logging.basicConfig(level=getattr(logging, log_level.upper(), logging.WARNING))
 
@@ -68,7 +80,31 @@ def main(
         jwt_secret=jwt_secret,
         username=username,
         theme=theme,
+        debug=debug,
     )
+
+    if debug:
+        import jwt as pyjwt
+
+        print("=== MEADOWS TUI DEBUG ===", file=sys.stderr)
+        print(f"  server_url : {config.server_url}", file=sys.stderr)
+        print(f"  theme      : {config.theme}", file=sys.stderr)
+        print(f"  system_name: {config.system_name}", file=sys.stderr)
+        if config.token:
+            try:
+                claims = pyjwt.decode(config.token, options={"verify_signature": False})
+                print(f"  token sub  : {claims.get('sub', '?')}", file=sys.stderr)
+                print(f"  token role : {claims.get('role', '?')}", file=sys.stderr)
+                print(f"  token exp  : {claims.get('exp', '?')}", file=sys.stderr)
+            except Exception as exc:
+                print(f"  token decode error: {exc}", file=sys.stderr)
+            print(f"  token (raw): {config.token[:60]}...", file=sys.stderr)
+        elif config.jwt_secret and config.username:
+            print(f"  jwt_secret : {config.jwt_secret}", file=sys.stderr)
+            print(f"  username   : {config.username}", file=sys.stderr)
+        else:
+            print("  auth       : (none — will show auth screen)", file=sys.stderr)
+        print("=========================", file=sys.stderr)
 
     from meadows.tui.app import run_app
 

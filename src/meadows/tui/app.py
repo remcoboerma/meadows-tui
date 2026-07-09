@@ -9,7 +9,7 @@ import os
 import queue
 import threading
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from meadows.tui.client_bridge import ClientBridge, ConnectionFailedError
 from meadows.tui.config import TUIConfig
@@ -50,6 +50,7 @@ class CursesApp:
         self._running = True
         self._status_msg = ""
         self._status_expire: float = 0.0
+        self._last_typing_sent: float = 0.0
 
         self._theme_name = config.theme
         if self._theme_name == "auto":
@@ -72,10 +73,13 @@ class CursesApp:
         self._bots: list[dict[str, Any]] = []
         self._messages: list[dict[str, Any]] = []
         self._msg_widgets: dict[str, dict[str, Any]] = {}
+        self._reactions: dict[str, dict[str, list[str]]] = {}  # msg_id -> {emoji: [usernames]}
         self._typing_users: list[str] = []
         self._input_buf = ""
         self._input_cursor = 0
-        self._scroll_offset = 0
+        self._cursor_idx: int = -1  # selected message index (-1 = last/auto)
+        self._view_top_idx: int = 0  # message index at top of visible area
+        self._react_target: str | None = None  # message id being reacted to
 
     _colors_initialized: bool = False
 
@@ -98,34 +102,80 @@ class CursesApp:
         return curses.color_pair(idx) | attr
 
     def _run_async(self, coro: Any) -> Any:
-        if self._async_loop:
-            return asyncio.run_coroutine_threadsafe(coro, self._async_loop).result(timeout=30)
-        return None
+        if self._async_loop is None:
+            logger.error("_run_async: async loop is None — _start_async_loop() may not have completed yet")
+            return None
+        logger.debug("_run_async: scheduling coroutine on background loop")
+        return asyncio.run_coroutine_threadsafe(coro, self._async_loop).result(timeout=30)
 
     def _start_async_loop(self) -> None:
+        ready = threading.Event()
+
         def _loop() -> None:
             self._async_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._async_loop)
+            logger.debug("async event loop started in background thread")
+            ready.set()
             self._async_loop.run_forever()
 
-        t = threading.Thread(target=_loop, daemon=True)
+        t = threading.Thread(target=_loop, daemon=True, name="sio-event-loop")
         t.start()
+        ready.wait(timeout=5)
+        if self._async_loop is None:
+            logger.error("_start_async_loop: event loop did not start within 5s")
+        else:
+            logger.debug("_start_async_loop: event loop ready")
 
     def _connect(self, token: str | None = None, username: str | None = None, secret: str | None = None) -> None:
+        logger.debug("_connect: token=%s username=%s secret=%s",
+                      f"{token[:20]}..." if token else None, username, "***" if secret else None)
         try:
             if token:
+                logger.debug("_connect: calling connect_with_token")
                 self._run_async(self._bridge.connect_with_token(token))
+                logger.debug("_connect: connect_with_token returned (connected=%s, authenticated=%s)",
+                             self._bridge.connected, self._bridge.authenticated)
             elif username and secret:
+                logger.debug("_connect: calling connect_with_secret")
                 self._run_async(self._bridge.connect_with_secret(username, secret))
+                logger.debug("_connect: connect_with_secret returned (connected=%s, authenticated=%s)",
+                             self._bridge.connected, self._bridge.authenticated)
+            else:
+                logger.debug("_connect: no credentials provided")
         except ConnectionFailedError as exc:
+            logger.error("_connect: ConnectionFailedError: %s", exc)
             self._auth_error = str(exc)
+        except TimeoutError:
+            logger.error("_connect: timed out waiting for connection (30s)")
+            self._auth_error = "Connection timed out"
         except Exception as exc:
+            logger.error("_connect: unexpected error: %s: %s", type(exc).__name__, exc)
             self._auth_error = str(exc)
 
     def _set_status(self, msg: str, duration: float = 3.0) -> None:
         import time
         self._status_msg = msg
         self._status_expire = time.monotonic() + duration
+
+    def _send_typing(self) -> None:
+        import time
+        now = time.monotonic()
+        if now - self._last_typing_sent < 2.0:
+            return
+        self._last_typing_sent = now
+        self._run_async(self._bridge.send_typing(self._current_group))
+
+    def _move_cursor(self, direction: int) -> None:
+        group_msgs = [m for m in self._messages
+                      if m.get("group_id") == self._current_group and not m.get("removed")]
+        if not group_msgs:
+            return
+        last = len(group_msgs) - 1
+        if self._cursor_idx < 0:
+            self._cursor_idx = last
+        else:
+            self._cursor_idx += direction
+        self._cursor_idx = max(0, min(self._cursor_idx, last))
 
     def run(self, stdscr: "curses.window") -> None:
         self._stdscr = stdscr
@@ -136,14 +186,22 @@ class CursesApp:
             curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
 
         self._init_colors()
+        logger.debug("run: starting async event loop")
         self._start_async_loop()
 
         if self._config.token:
+            logger.debug("run: auto-connecting with token")
             self._screen = "connecting"
             self._connect(token=self._config.token)
         elif self._config.jwt_secret and self._config.username:
+            logger.debug("run: auto-connecting with secret for user %s", self._config.username)
             self._screen = "connecting"
             self._connect(username=self._config.username, secret=self._config.jwt_secret)
+        else:
+            logger.debug("run: no credentials configured, showing auth screen")
+
+        logger.debug("run: entering main loop (screen=%s, connected=%s, authenticated=%s)",
+                      self._screen, self._bridge.connected, self._bridge.authenticated)
 
         while self._running:
             try:
@@ -161,6 +219,11 @@ class CursesApp:
             return
 
         if ch == -1:
+            return
+
+        if ch == curses.KEY_MOUSE:
+            with contextlib.suppress(curses.error):
+                curses.getmouse()
             return
 
         if self._screen == "auth":
@@ -189,33 +252,38 @@ class CursesApp:
     def _handle_input_field(self, ch: int) -> None:  # noqa: C901
         if ch == 27:
             self._focus = "groups"
-        elif ch == curses.KEY_F(10):
+        elif ch == curses.KEY_F0 + 10:
             self._running = False
         elif ch in (curses.KEY_ENTER, 10, 13):
             if self._input_buf.strip():
                 self._run_async(self._bridge.send_message(self._input_buf.strip(), self._current_group))
                 self._input_buf = ""
                 self._input_cursor = 0
+                self._cursor_idx = -1
+                self._view_top_idx = 0
         elif ch in (curses.KEY_BACKSPACE, 127, 8):
             if self._input_cursor > 0:
                 self._input_buf = self._input_buf[:self._input_cursor - 1] + self._input_buf[self._input_cursor:]
                 self._input_cursor -= 1
+                self._send_typing()
         elif ch == curses.KEY_LEFT:
             self._input_cursor = max(0, self._input_cursor - 1)
         elif ch == curses.KEY_RIGHT:
             self._input_cursor = min(len(self._input_buf), self._input_cursor + 1)
         elif ch == curses.KEY_UP:
-            self._scroll_offset = max(0, self._scroll_offset - 1)
+            self._move_cursor(-1)
         elif ch == curses.KEY_DOWN:
-            max_scroll = max(0, len(self._messages) - 1)
-            self._scroll_offset = min(max_scroll, self._scroll_offset + 1)
+            self._move_cursor(1)
         elif ch == 9 or ch == curses.KEY_BTAB:
             self._focus = "groups"
         elif ch == 18:
             self._sidebar_visible = not self._sidebar_visible
+        elif ch == 5:  # Ctrl+E
+            self._prompt_reaction()
         elif 32 <= ch <= 126:
             self._input_buf = self._input_buf[:self._input_cursor] + chr(ch) + self._input_buf[self._input_cursor:]
             self._input_cursor += 1
+            self._send_typing()
 
     def _handle_group_nav(self, ch: int) -> None:
         if ch == 27 or ch == 9 or ch == curses.KEY_BTAB:
@@ -256,13 +324,84 @@ class CursesApp:
         curses.noecho()
         curses.curs_set(1)
 
+    QUICK_EMOJIS: ClassVar[list[str]] = ["👍", "❤️", "😂", "😮", "😢", "🔥", "🎉", "👎", "🤔"]
+
+    def _prompt_reaction(self) -> None:  # noqa: C901
+        if not self._messages:
+            return
+        group_msgs = [m for m in self._messages
+                      if m.get("group_id") == self._current_group and not m.get("removed")]
+        if not group_msgs:
+            return
+        idx = self._cursor_idx if self._cursor_idx >= 0 else len(group_msgs) - 1
+        idx = max(0, min(idx, len(group_msgs) - 1))
+        target = group_msgs[idx]
+        target_id = target.get("id", "")
+        if not target_id:
+            return
+
+        h, _w = self._stdscr.getmaxyx()
+        prompt_y = h - 3
+        self._stdscr.move(prompt_y, 0)
+        self._stdscr.clrtoeol()
+        label = "React: "
+        self._stdscr.addstr(prompt_y, 1, label, self._color("text-accent") | curses.A_BOLD)
+        x = len(label) + 2
+        for i, emoji in enumerate(self.QUICK_EMOJIS):
+            num = str(i + 1)
+            self._stdscr.addstr(prompt_y, x, f"{num}:{emoji}", self._color("text"))
+            x += len(num) + 1 + 2 + 1
+        self._stdscr.addstr(prompt_y, x + 1, "0:cancel  o:other", self._color("text-muted"))
+        self._stdscr.refresh()
+
+        curses.cbreak()
+        self._stdscr.nodelay(False)
+        self._stdscr.keypad(True)
+        try:
+            ch = self._stdscr.getch()
+        except (curses.error, KeyboardInterrupt):
+            ch = -1
+        self._stdscr.nodelay(True)
+        curses.cbreak()
+
+        if 49 <= ch <= 57:
+            idx = ch - 49
+            if idx < len(self.QUICK_EMOJIS):
+                emoji = self.QUICK_EMOJIS[idx]
+                self._run_async(self._bridge.add_reaction(emoji, target_id, self._current_group))
+                self._set_status(f"Reacted with {emoji}", 2.0)
+        elif ch == 111:
+            curses.echo()
+            curses.curs_set(1)
+            ey = h - 2
+            self._stdscr.move(ey, 0)
+            self._stdscr.clrtoeol()
+            self._stdscr.addstr(ey, 1, "Emoji: ", self._color("text-accent"))
+            self._stdscr.refresh()
+            try:
+                curses.nocbreak()
+                self._stdscr.keypad(True)
+                emoji = self._stdscr.getstr(ey, 8, 10).decode("utf-8", errors="replace").strip()
+                curses.cbreak()
+                self._stdscr.nodelay(True)
+                if emoji:
+                    self._run_async(self._bridge.add_reaction(emoji, target_id, self._current_group))
+                    self._set_status(f"Reacted with {emoji}", 2.0)
+            except Exception:
+                curses.cbreak()
+                self._stdscr.nodelay(True)
+            curses.noecho()
+            curses.curs_set(1)
+
     def _switch_group(self, gid: str) -> None:
         if gid == self._current_group:
             return
         self._current_group = gid
         self._messages = []
         self._msg_widgets = {}
-        self._scroll_offset = 0
+        self._reactions = {}
+        self._cursor_idx = -1
+        self._view_top_idx = 0
         self._typing_users = []
         self._run_async(self._bridge.join_group(gid))
 
@@ -273,12 +412,19 @@ class CursesApp:
             except queue.Empty:
                 break
 
+            logger.debug("_handle_events: event=%s", event)
+
             if event == "authenticated":
+                logger.info("authenticated — switching to chat screen")
                 self._screen = "chat"
                 self._handle_authenticated(data)
             elif event == "auth_error":
+                logger.error("auth_error — returning to auth screen: %s", data.get("error", data))
                 self._screen = "auth"
                 self._auth_error = data.get("error", str(data))
+            elif event == "error":
+                logger.warning("server error: %s", data.get("error", data))
+                self._set_status(f"Error: {data.get('error', str(data))}", 5.0)
             elif event == "message":
                 self._handle_message(data)
             elif event == "user_typing":
@@ -306,8 +452,10 @@ class CursesApp:
                 mid = data.get("message_id", "")
                 if mid in self._msg_widgets:
                     self._msg_widgets[mid]["removed"] = True
-            elif event == "error":
-                self._set_status(f"Error: {data.get('error', str(data))}", 5.0)
+            elif event == "reaction_added":
+                self._handle_reaction_added(data)
+            elif event == "reaction_toggled":
+                self._handle_reaction_toggled(data)
 
         if self._typing_users:
             self._typing_users = [u for u in self._typing_users if True]
@@ -330,7 +478,42 @@ class CursesApp:
             return
         self._messages.append(data)
         self._msg_widgets[data.get("id", "")] = data
-        self._scroll_offset = max(0, len(self._messages) - 1)
+        uid = data.get("user_id", data.get("username", ""))
+        if uid in self._typing_users:
+            self._typing_users.remove(uid)
+
+    def _handle_reaction_added(self, data: dict[str, Any]) -> None:
+        gid = data.get("group_id", "")
+        if gid != self._current_group:
+            return
+        mid = data.get("target_message_id", "")
+        emoji = data.get("emoji", "")
+        user = data.get("username", data.get("user_id", "?"))
+        if not mid or not emoji:
+            return
+        msg_reactions = self._reactions.setdefault(mid, {})
+        users = msg_reactions.setdefault(emoji, [])
+        if user not in users:
+            users.append(user)
+
+    def _handle_reaction_toggled(self, data: dict[str, Any]) -> None:
+        gid = data.get("group_id", "")
+        if gid != self._current_group:
+            return
+        mid = data.get("target_message_id", "")
+        emoji = data.get("emoji", "")
+        user = data.get("username", data.get("user_id", "?"))
+        if not mid or not emoji:
+            return
+        removed = data.get("removed", False)
+        msg_reactions = self._reactions.setdefault(mid, {})
+        users = msg_reactions.setdefault(emoji, [])
+        if removed and user in users:
+            users.remove(user)
+            if not users:
+                del msg_reactions[emoji]
+        elif user not in users:
+            users.append(user)
 
     def _handle_user_typing(self, data: dict[str, Any]) -> None:
         gid = data.get("group_id", "")
@@ -345,7 +528,9 @@ class CursesApp:
         self._current_group = gid
         self._messages = []
         self._msg_widgets = {}
-        self._scroll_offset = 0
+        self._reactions = {}
+        self._cursor_idx = -1
+        self._view_top_idx = 0
         self._typing_users = []
 
         members = data.get("members", [])
@@ -353,8 +538,18 @@ class CursesApp:
 
         thread = data.get("thread", [])
         for msg in thread:
-            self._messages.append(msg)
-            self._msg_widgets[msg.get("id", "")] = msg
+            if msg.get("type") == "reaction":
+                mid = msg.get("target_message_id", "")
+                emoji = msg.get("emoji", "")
+                user = msg.get("username", msg.get("user_id", "?"))
+                if mid and emoji and not msg.get("removed"):
+                    msg_reactions = self._reactions.setdefault(mid, {})
+                    users = msg_reactions.setdefault(emoji, [])
+                    if user not in users:
+                        users.append(user)
+            else:
+                self._messages.append(msg)
+                self._msg_widgets[msg.get("id", "")] = msg
 
     def _msg_height(self, data: dict[str, Any]) -> int:
         content = data.get("content", "")
@@ -499,13 +694,59 @@ class CursesApp:
     def _draw_messages(self, x: int, y: int, w: int, h: int) -> None:
         auth = self._bridge.auth_data
         aid = auth.user_id if auth else ""
+        username = auth.username if auth else ""
 
+        group_msgs = [m for m in self._messages
+                      if m.get("group_id") == self._current_group and not m.get("removed")]
+        if not group_msgs:
+            return
+
+        last = len(group_msgs) - 1
+        cursor = self._cursor_idx if self._cursor_idx >= 0 else last
+        cursor = max(0, min(cursor, last))
+
+        # Pre-compute line ranges per message
+        msg_line_ranges: list[tuple[int, int]] = []  # (start_line, line_count)
+        total_lines = 0
+        for msg in group_msgs:
+            msg_lines = self._format_message(msg, w, aid, username, selected=False)
+            count = len(msg_lines)
+            msg_line_ranges.append((total_lines, count))
+            total_lines += count
+
+        # Ensure cursor message is visible by adjusting _view_top_idx
+        cursor_start = msg_line_ranges[cursor][0]
+        cursor_count = msg_line_ranges[cursor][1]
+
+        # Calculate visible lines from _view_top_idx
+        view_start_line = msg_line_ranges[self._view_top_idx][0]
+
+        # If cursor is above view, scroll up
+        if cursor_start < view_start_line:
+            self._view_top_idx = cursor
+            view_start_line = cursor_start
+        # If cursor is below view, scroll down
+        elif cursor_start + cursor_count > view_start_line + h:
+            # Find which message fits at top so cursor is at bottom
+            target_line = cursor_start + cursor_count - h
+            self._view_top_idx = cursor
+            for i in range(cursor, -1, -1):
+                if msg_line_ranges[i][0] <= target_line:
+                    self._view_top_idx = i
+                    break
+            view_start_line = msg_line_ranges[self._view_top_idx][0]
+
+        # Clamp view_top_idx
+        self._view_top_idx = max(0, min(self._view_top_idx, last))
+
+        # Build all lines with selection marking
         lines: list[tuple[str, int]] = []
-        for msg in self._messages:
-            lines.extend(self._format_message(msg, w, aid))
+        for i, msg in enumerate(group_msgs):
+            is_selected = i == cursor
+            lines.extend(self._format_message(msg, w, aid, username, selected=is_selected))
 
-        visible_start = max(0, len(lines) - h + self._scroll_offset)
-        visible = lines[visible_start:visible_start + h]
+        # Slice visible portion
+        visible = lines[view_start_line:view_start_line + h]
 
         for i, (text, attr) in enumerate(visible):
             if y + i >= y + h:
@@ -513,13 +754,23 @@ class CursesApp:
             with contextlib.suppress(curses.error):
                 self._stdscr.addnstr(y + i, x, text, w - 1, attr)
 
-    def _format_message(self, data: dict[str, Any], width: int, own_id: str) -> list[tuple[str, int]]:
+    def _format_message(  # noqa: C901
+        self, data: dict[str, Any], width: int, own_id: str, own_name: str, *, selected: bool = False
+    ) -> list[tuple[str, int]]:
         username = data.get("username", data.get("bot_name", data.get("user_id", "?")))
         content = data.get("content", "")
         timestamp = data.get("timestamp", "")
         msg_type = data.get("type", "user")
         removed = data.get("removed", False)
         is_own = data.get("user_id", "") == own_id
+
+        is_mention = own_name and f"@{own_name}" in content
+        is_reply_to_own = False
+        quoted = data.get("quoted_message")
+        if quoted:
+            is_reply_to_own = quoted.get("author", "") == own_name
+
+        highlighted = is_mention or is_reply_to_own
 
         try:
             dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
@@ -543,8 +794,19 @@ class CursesApp:
             badge = " (you)"
             badge_attr = curses.A_BOLD
 
+        if highlighted:
+            badge += " *"
+            badge_attr |= curses.A_BOLD
+
         header = f"[{ts}] {username}{badge}"
-        result.append((header[:width], self._color("text-accent") | badge_attr))
+        if selected:
+            header = f"> {header}"
+        header_attr = self._color("text-accent") | badge_attr
+        if is_mention:
+            header_attr = self._color("mention") | curses.A_BOLD
+        elif is_reply_to_own:
+            header_attr = self._color("warning") | curses.A_BOLD
+        result.append((header[:width], header_attr))
 
         quoted = data.get("quoted_message")
         if quoted:
@@ -552,11 +814,26 @@ class CursesApp:
             qc = quoted.get("content", "")
             if qa and qc:
                 qt = qc[:50] + "..." if len(qc) > 50 else qc
-                result.append((f"  └─ re: {qa}: {qt}"[:width], self._color("text-muted")))
+                attr = self._color("text-muted")
+                if is_reply_to_own:
+                    attr = self._color("warning")
+                result.append((f"  └─ re: {qa}: {qt}"[:width], attr))
 
         body_lines = content.split("\n")
         for bl in body_lines:
-            result.append((f"  {bl}"[:width], self._color("text")))
+            attr = self._color("text")
+            if is_mention and f"@{own_name}" in bl:
+                attr = self._color("mention") | curses.A_BOLD
+            result.append((f"  {bl}"[:width], attr))
+
+        msg_id = data.get("id", "")
+        if msg_id and msg_id in self._reactions:
+            parts = []
+            for emoji, users in self._reactions[msg_id].items():
+                if users:
+                    parts.append(f"{emoji}{len(users)}")
+            if parts:
+                result.append((f"  {' '.join(parts)}"[:width], self._color("accent")))
 
         return result
 
@@ -588,7 +865,7 @@ class CursesApp:
             with contextlib.suppress(curses.error):
                 self._stdscr.move(y, cursor_x)
 
-        hint = " Tab:switch pane | F10:quit | ^R:sidebar "
+        hint = " ^E:react | Tab:pane | F10:quit | ^R:sidebar "
         with contextlib.suppress(curses.error):
             self._stdscr.addnstr(y, x + w - len(hint) - 1, hint, len(hint), self._color("text-muted"))
 

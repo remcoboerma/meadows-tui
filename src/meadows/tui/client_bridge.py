@@ -45,43 +45,49 @@ class ClientBridge:
         return self._auth_data
 
     def _emit(self, event: str, data: dict[str, Any]) -> None:
+        logger.debug("queue emit: %s (keys=%s)", event, list(data.keys()) if isinstance(data, dict) else type(data))
         self._queue.put((event, data))
 
     async def connect_with_token(self, token: str) -> None:
         import jwt as pyjwt
 
-        logger.info("connecting with token to %s", self._server_url)
+        logger.debug("connect_with_token: decoding JWT...")
         claims_dict = pyjwt.decode(token, options={"verify_signature": False})
         claims = JWTClaims(**claims_dict)
+        logger.debug("connect_with_token: claims decoded — sub=%s role=%s username=%s exp=%s",
+                      claims.sub, claims.role, claims.username, claims.exp)
 
         if claims.role == "bot":
             logger.warning("token is a bot token (role=bot), TUI expects a user token")
 
+        logger.debug("connect_with_token: creating MeadowClient(server_url=%s)", self._server_url)
         self._mc = MeadowClient(server_url=self._server_url, claims=claims, token=token)
         self._register_handlers()
         self._register_sio_logging()
 
-        logger.info("connecting socket.io to %s/chat", self._server_url)
+        logger.debug("connect_with_token: calling sio.connect(%s)", self._server_url)
         await self._mc.connect()
-        logger.info("socket.io transport connected, awaiting auth...")
+        logger.debug("connect_with_token: sio.connect() returned — transport up, waiting for namespace auth...")
 
     async def connect_with_secret(self, username: str, jwt_secret: str) -> None:
         from meadows.protocol.jwt import build_claims, JWTRole
 
-        logger.info("connecting with secret as %s to %s", username, self._server_url)
+        logger.debug("connect_with_secret: building claims for user=%s", username)
         claims = build_claims(name=username, role=JWTRole.USER)
+        logger.debug("connect_with_secret: creating MeadowClient(server_url=%s)", self._server_url)
         self._mc = MeadowClient(server_url=self._server_url, claims=claims, jwt_secret=jwt_secret.encode())
         self._register_handlers()
         self._register_sio_logging()
 
+        logger.debug("connect_with_secret: calling sio.connect(%s)", self._server_url)
         await self._mc.connect()
-        logger.info("socket.io transport connected, awaiting auth for %s...", username)
+        logger.debug("connect_with_secret: sio.connect() returned — transport up, waiting for namespace auth...")
 
     def _register_sio_logging(self) -> None:
         if not self._mc:
             return
-        self._mc.on_connect(lambda: logger.debug("SIO /chat namespace connected"))
-        self._mc.on_disconnect(lambda: logger.debug("SIO /chat namespace disconnected"))
+        self._mc.on_connect(lambda: logger.debug("SIO /chat CONNECT (namespace connected)"))
+        self._mc.on_disconnect(lambda: logger.debug("SIO /chat DISCONNECT (namespace disconnected)"))
 
     def _register_handlers(self) -> None:
         if not self._mc:
@@ -105,9 +111,12 @@ class ClientBridge:
         self._mc.on(EventName.REACTION_TOGGLED, self._on_reaction_toggled)
 
     async def _on_auth_error(self, data: dict[str, Any]) -> None:
+        logger.error("auth_error from server: %s", data)
         self._emit("auth_error", data)
 
     async def _on_authenticated(self, data: dict[str, Any]) -> None:
+        logger.debug("authenticated event received — user_id=%s username=%s groups=%d",
+                      data.get("user_id"), data.get("username"), len(data.get("groups", [])))
         self._auth_data = AuthData(data)
         self._emit("authenticated", data)
 

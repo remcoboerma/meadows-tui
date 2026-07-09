@@ -187,7 +187,7 @@ class TestCursesApp:
             "content": "hello world",
             "timestamp": "2025-01-01T12:00:00.000000",
         }
-        lines = app._format_message(data, 80, "user-alice")
+        lines = app._format_message(data, 80, "user-alice", "alice")
         text = " ".join(t for t, _ in lines)
         assert "alice" in text
         assert "hello world" in text
@@ -209,7 +209,7 @@ class TestCursesApp:
             "content": "I am a bot",
             "timestamp": "2025-01-01T12:00:00.000000",
         }
-        lines = app._format_message(data, 80, "user-alice")
+        lines = app._format_message(data, 80, "user-alice", "alice")
         text = " ".join(t for t, _ in lines)
         assert "helper" in text
         assert "(bot)" in text
@@ -231,7 +231,7 @@ class TestCursesApp:
             "timestamp": "2025-01-01T12:00:00.000000",
             "removed": True,
         }
-        lines = app._format_message(data, 80, "")
+        lines = app._format_message(data, 80, "", "")
         text = " ".join(t for t, _ in lines)
         assert "removed" in text
 
@@ -255,7 +255,7 @@ class TestCursesApp:
                 "content": "original message",
             },
         }
-        lines = app._format_message(data, 80, "")
+        lines = app._format_message(data, 80, "", "")
         text = " ".join(t for t, _ in lines)
         assert "re: bob" in text
 
