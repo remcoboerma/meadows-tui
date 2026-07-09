@@ -51,6 +51,35 @@ def setup(c: Context) -> None:
     )
 
 
+@task(optional=["server", "token", "jwt_secret", "username", "theme", "log_level"])
+def tui(
+    c: Context,
+    server: str = "",
+    token: str = "",
+    jwt_secret: str = "",
+    username: str = "",
+    theme: str = "",
+    log_level: str = "",
+) -> None:
+    """Launch the TUI client."""
+    import subprocess
+
+    args = ["uv", "run", "meadows-tui"]
+    if server:
+        args.append(f"--server={server}")
+    if token:
+        args.append(f"--token={token}")
+    if jwt_secret:
+        args.append(f"--jwt-secret={jwt_secret}")
+    if username:
+        args.append(f"--username={username}")
+    if theme:
+        args.append(f"--theme={theme}")
+    if log_level:
+        args.append(f"--log-level={log_level}")
+    raise SystemExit(subprocess.run(args).returncode)
+
+
 @task
 def test(c: Context) -> None:
     c.run("uv run pytest -q")
