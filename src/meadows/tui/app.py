@@ -835,6 +835,17 @@ class CursesApp:
             if parts:
                 result.append((f"  {' '.join(parts)}"[:width], self._color("accent")))
 
+        # BUSINESS RULE (MEADOWS-forms-intent §2.14): TUI can't render
+        # interactive HTML. Show a hint directing the user to the web UI.
+        labels = data.get("labels", [])
+        has_interactive = any(
+            lbl[0] == "meadows" and lbl[1] == "interactive-form" and lbl[2] == "1.0.0"
+            for lbl in labels
+            if isinstance(lbl, (list, tuple)) and len(lbl) >= 3
+        )
+        if has_interactive:
+            result.append(("  [Interactive form - open in web interface]"[:width], self._color("text-muted")))
+
         return result
 
     def _draw_input_line(self, y: int, x: int, w: int) -> None:
