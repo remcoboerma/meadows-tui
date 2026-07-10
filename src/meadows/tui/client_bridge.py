@@ -1,13 +1,10 @@
-"""Bridges MeadowClient events to Textual message passing."""
+"""Bridges MeadowClient events to a thread-safe queue for the curses TUI."""
 
 from __future__ import annotations
 
-import contextlib
 import logging
+import queue
 from typing import Any
-
-from textual import messages as text_messages
-from textual.app import App
 
 from meadows.client import MeadowClient
 from meadows.protocol import EventName, JWTClaims
@@ -22,15 +19,15 @@ class AuthData:
         self.groups: list[dict[str, Any]] = data.get("groups", [])
         self.bots: list[dict[str, Any]] = data.get("bots", [])
         self.permissions: list[str] = data.get("permissions", [])
-        self.available_permissions: list[str] = data.get("available_permissions", [])
+        self.available_permissions: list[str | dict[str, str]] = data.get("available_permissions", [])
 
     def __repr__(self) -> str:
         return f"AuthData(user_id={self.user_id!r}, username={self.username!r}, groups={len(self.groups)})"
 
 
 class ClientBridge:
-    def __init__(self, app: App, server_url: str) -> None:
-        self._app = app
+    def __init__(self, event_queue: queue.Queue[tuple[str, dict[str, Any]]], server_url: str) -> None:
+        self._queue = event_queue
         self._server_url = server_url
         self._mc: MeadowClient | None = None
         self._auth_data: AuthData | None = None
@@ -47,67 +44,50 @@ class ClientBridge:
     def auth_data(self) -> AuthData | None:
         return self._auth_data
 
+    def _emit(self, event: str, data: dict[str, Any]) -> None:
+        logger.debug("queue emit: %s (keys=%s)", event, list(data.keys()) if isinstance(data, dict) else type(data))
+        self._queue.put((event, data))
+
     async def connect_with_token(self, token: str) -> None:
         import jwt as pyjwt
 
-        logger.info("connecting with token to %s", self._server_url)
-
-        try:
-            claims_dict = pyjwt.decode(token, options={"verify_signature": False})
-            logger.debug("decoded claims: %s", claims_dict)
-        except Exception as exc:
-            logger.error("failed to decode token: %s", exc)
-            raise ConnectionFailedError(f"Invalid JWT: {exc}") from exc
-
+        logger.debug("connect_with_token: decoding JWT...")
+        claims_dict = pyjwt.decode(token, options={"verify_signature": False})
         claims = JWTClaims(**claims_dict)
-        logger.debug("parsed claims: sub=%s role=%s", claims.sub, claims.role)
+        logger.debug("connect_with_token: claims decoded — sub=%s role=%s username=%s exp=%s",
+                      claims.sub, claims.role, claims.username, claims.exp)
 
         if claims.role == "bot":
             logger.warning("token is a bot token (role=bot), TUI expects a user token")
 
-        self._mc = MeadowClient(
-            server_url=self._server_url,
-            claims=claims,
-            token=token,
-        )
+        logger.debug("connect_with_token: creating MeadowClient(server_url=%s)", self._server_url)
+        self._mc = MeadowClient(server_url=self._server_url, claims=claims, token=token)
         self._register_handlers()
         self._register_sio_logging()
 
-        logger.info("connecting socket.io to %s/chat", self._server_url)
-        try:
-            await self._mc.connect()
-            logger.info("socket.io transport connected, awaiting auth...")
-        except Exception as exc:
-            logger.error("socket.io connect failed: %s", exc)
-            raise ConnectionFailedError(f"Socket.IO connect failed: {exc}") from exc
+        logger.debug("connect_with_token: calling sio.connect(%s)", self._server_url)
+        await self._mc.connect()
+        logger.debug("connect_with_token: sio.connect() returned — transport up, waiting for namespace auth...")
 
     async def connect_with_secret(self, username: str, jwt_secret: str) -> None:
         from meadows.protocol.jwt import build_claims, JWTRole
 
-        logger.info("connecting with secret as %s to %s", username, self._server_url)
+        logger.debug("connect_with_secret: building claims for user=%s", username)
         claims = build_claims(name=username, role=JWTRole.USER)
-        logger.debug("built claims: sub=%s", claims.sub)
-
-        self._mc = MeadowClient(
-            server_url=self._server_url,
-            claims=claims,
-            jwt_secret=jwt_secret.encode(),
-        )
+        logger.debug("connect_with_secret: creating MeadowClient(server_url=%s)", self._server_url)
+        self._mc = MeadowClient(server_url=self._server_url, claims=claims, jwt_secret=jwt_secret.encode())
         self._register_handlers()
         self._register_sio_logging()
 
-        try:
-            await self._mc.connect()
-            logger.info("socket.io transport connected, awaiting auth for %s...", username)
-        except Exception as exc:
-            logger.error("socket.io connect failed: %s", exc)
-            raise ConnectionFailedError(f"Socket.IO connect failed: {exc}") from exc
+        logger.debug("connect_with_secret: calling sio.connect(%s)", self._server_url)
+        await self._mc.connect()
+        logger.debug("connect_with_secret: sio.connect() returned — transport up, waiting for namespace auth...")
 
     def _register_sio_logging(self) -> None:
         if not self._mc:
             return
-        self._mc.on_connect(lambda: logger.debug("SIO /chat namespace connected"))
-        self._mc.on_disconnect(lambda: logger.debug("SIO /chat namespace disconnected"))
+        self._mc.on_connect(lambda: logger.debug("SIO /chat CONNECT (namespace connected)"))
+        self._mc.on_disconnect(lambda: logger.debug("SIO /chat DISCONNECT (namespace disconnected)"))
 
     def _register_handlers(self) -> None:
         if not self._mc:
@@ -130,70 +110,62 @@ class ClientBridge:
         self._mc.on(EventName.REACTION_ADDED, self._on_reaction_added)
         self._mc.on(EventName.REACTION_TOGGLED, self._on_reaction_toggled)
 
-    async def _post_message(self, msg_type: type, data: Any) -> None:
-        with contextlib.suppress(Exception):
-            self._app.post_message(msg_type(data))
-
     async def _on_auth_error(self, data: dict[str, Any]) -> None:
-        error = data.get("error", str(data))
-        logger.error("auth error from server: %s", error)
-        await self._post_message(AuthFailed, {"error": error})
+        logger.error("auth_error from server: %s", data)
+        self._emit("auth_error", data)
 
     async def _on_authenticated(self, data: dict[str, Any]) -> None:
+        logger.debug("authenticated event received — user_id=%s username=%s groups=%d",
+                      data.get("user_id"), data.get("username"), len(data.get("groups", [])))
         self._auth_data = AuthData(data)
-        logger.info("authenticated as %s (user_id=%s)", self._auth_data.username, self._auth_data.user_id)
-        logger.debug("auth data: %s", self._auth_data)
-        await self._post_message(Authenticated, data)
+        self._emit("authenticated", data)
 
     async def _on_message(self, data: dict[str, Any]) -> None:
-        await self._post_message(ChatMessage, data)
+        self._emit("message", data)
 
     async def _on_user_typing(self, data: dict[str, Any]) -> None:
-        await self._post_message(UserTyping, data)
+        self._emit("user_typing", data)
 
     async def _on_joined_group(self, data: dict[str, Any]) -> None:
-        await self._post_message(JoinedGroup, data)
+        self._emit("joined_group", data)
 
     async def _on_left_group(self, data: dict[str, Any]) -> None:
-        await self._post_message(LeftGroup, data)
+        self._emit("left_group", data)
 
     async def _on_user_joined(self, data: dict[str, Any]) -> None:
-        await self._post_message(UserJoined, data)
+        self._emit("user_joined", data)
 
     async def _on_user_left(self, data: dict[str, Any]) -> None:
-        await self._post_message(UserLeft, data)
+        self._emit("user_left", data)
 
     async def _on_members_updated(self, data: dict[str, Any]) -> None:
-        await self._post_message(MembersUpdated, data)
+        self._emit("members_updated", data)
 
     async def _on_group_created(self, data: dict[str, Any]) -> None:
-        await self._post_message(GroupCreated, data)
+        self._emit("group_created", data)
 
     async def _on_group_deleted(self, data: dict[str, Any]) -> None:
-        await self._post_message(GroupDeleted, data)
+        self._emit("group_deleted", data)
 
     async def _on_group_list(self, data: dict[str, Any]) -> None:
-        await self._post_message(GroupList, data)
+        self._emit("group_list", data)
 
     async def _on_bot_list(self, data: dict[str, Any]) -> None:
-        await self._post_message(BotList, data)
+        self._emit("bot_list", data)
 
     async def _on_message_removed(self, data: dict[str, Any]) -> None:
-        await self._post_message(MessageRemoved, data)
+        self._emit("message_removed", data)
 
     async def _on_reaction_added(self, data: dict[str, Any]) -> None:
-        await self._post_message(ReactionAdded, data)
+        self._emit("reaction_added", data)
 
     async def _on_reaction_toggled(self, data: dict[str, Any]) -> None:
-        await self._post_message(ReactionToggled, data)
+        self._emit("reaction_toggled", data)
 
     async def _on_error(self, data: dict[str, Any]) -> None:
-        logger.warning("server error: %s", data)
-        await self._post_message(ServerError, data)
+        self._emit("error", data)
 
-    async def send_message(
-        self, content: str, group_id: str = "general", quoted_message_id: str | None = None
-    ) -> None:
+    async def send_message(self, content: str, group_id: str = "general", quoted_message_id: str | None = None) -> None:
         if not self._mc:
             return
         await self._mc.send_message(content=content, group_id=group_id, quoted_message_id=quoted_message_id)
@@ -206,18 +178,16 @@ class ClientBridge:
     async def add_reaction(self, emoji: str, target_message_id: str, group_id: str) -> None:
         if not self._mc:
             return
-        await self._mc.emit(
-            EventName.ADD_REACTION,
-            {"emoji": emoji, "target_message_id": target_message_id, "group_id": group_id},
-        )
+        await self._mc.emit(EventName.ADD_REACTION, {
+            "emoji": emoji, "target_message_id": target_message_id, "group_id": group_id,
+        })
 
     async def remove_reaction(self, emoji: str, target_message_id: str, group_id: str) -> None:
         if not self._mc:
             return
-        await self._mc.emit(
-            EventName.REMOVE_REACTION,
-            {"emoji": emoji, "target_message_id": target_message_id, "group_id": group_id},
-        )
+        await self._mc.emit(EventName.REMOVE_REACTION, {
+            "emoji": emoji, "target_message_id": target_message_id, "group_id": group_id,
+        })
 
     async def join_group(self, group_id: str) -> None:
         if not self._mc:
@@ -250,7 +220,7 @@ class ClientBridge:
         await self._mc.emit(EventName.LIST_GROUPS, {})
 
     async def request_bot_jwt(
-        self, bot_name: str, permissions: list[str] | None = None, expiry: str | None = None
+        self, bot_name: str, permissions: list[str] | None = None, expiry: str | None = None,
     ) -> None:
         if not self._mc:
             return
@@ -268,139 +238,3 @@ class ClientBridge:
 
 class ConnectionFailedError(Exception):
     pass
-
-
-class Authenticated(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class AuthFailed(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class ServerError(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class ChatMessage(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class UserTyping(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class JoinedGroup(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class LeftGroup(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class UserJoined(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class UserLeft(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class MembersUpdated(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class GroupCreated(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class GroupDeleted(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class GroupList(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class BotList(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class MessageRemoved(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class ReactionAdded(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
-
-
-class ReactionToggled(text_messages.Message):
-    data: dict[str, Any]
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self.data = data
-        super().__init__()
