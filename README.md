@@ -1,20 +1,20 @@
 # meadows-tui
 
-> MEADOWS terminal UI client: a Textual-based TUI chat client for MEADOWS.
-> Uses click for CLI argument parsing and Textual for the terminal interface.
+> MEADOWS terminal UI client: a curses-based TUI chat client for MEADOWS.
+> Uses click for CLI argument parsing and curses for the terminal interface.
 > Connects directly to meadows-server via Socket.IO using meadows-client.
 
 ## What this package contains
 
 - `cli.py` — Click entry point with env-var support
-- `app.py` — Textual `App` with dark/light theme, keybindings, auth flow
+- `app.py` — Curses-based terminal app with dark/light theme, keybindings, auth flow
 - `screens/auth_screen.py` — JWT token paste or local secret auth
 - `screens/chat_screen.py` — Main chat: messages, sidebar, input
 - `widgets/message_widget.py` — Message rendering with quotes, reactions
 - `widgets/input_widget.py` — Chat input with reply quote preview
 - `widgets/sidebar_widget.py` — Groups, users, and bots panels
-- `client_bridge.py` — Adapts MeadowClient events to Textual messages
-- `themes.py` — Dark and light color definitions
+- `client_bridge.py` — Adapts MeadowClient events to curses-compatible messages
+- `themes.py` — Dark and light color definitions (mapped to curses colors)
 - `config.py` — Configuration dataclass
 
 ## Install
@@ -61,8 +61,8 @@ meadows-tui --server http://chat.example.com:8080 --token eyJ...
 
 1. **Protocol constants only.** The only import from `meadows.protocol` is `EventName` (in `__init__.py`).
 2. **Transport via meadows-client.** No raw Socket.IO usage; all transport goes through `MeadowClient`.
-3. **Event bridge.** Socket.IO events from the server are translated to Textual `Message` subclasses in `client_bridge.py`.
-4. **Theme support.** Dark/light modes with terminal-appropriate colors, toggleable at runtime.
+3. **Event bridge.** Socket.IO events from the server are translated to curses-compatible messages in `client_bridge.py`.
+4. **Theme support.** Dark/light modes with terminal-appropriate colors (mapped to curses color constants), toggleable at runtime.
 5. **PEP 420 namespace.** `src/meadows/tui/__init__.py` exists; there is NO `src/meadows/__init__.py`.
 
 ## Configuration (env vars)
