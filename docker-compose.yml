@@ -1,0 +1,36 @@
+# meadows-tui is a CLI app, not a service: this compose file exists so the image
+# can be built/tagged (`ew build` / `docker compose build`) and so env-var
+# configuration can be supplied in one place. For interactive use:
+#
+#   docker run -it --network host \
+#     -e MEADOWS_JWT=<token> remcoboerma/meadows-tui
+#
+# (--network host lets the default http://localhost:8080 reach a server on the host)
+services:
+  meadows-tui:
+    # Context is the repo root: pyproject.toml's [tool.uv.sources] points at
+    # ../meadows-protocol and ../meadows-client (see Dockerfile).
+    build:
+      context: ..
+      dockerfile: meadows-tui/Dockerfile
+    image: remcoboerma/meadows-tui
+    restart: "no"
+    # A curses TUI needs a terminal to attach to.
+    stdin_open: true
+    tty: true
+    environment:
+      - MEADOWS_SERVER_URL=${MEADOWS_SERVER_URL:-http://localhost:8080}
+      - MEADOWS_JWT=${MEADOWS_JWT:-}
+      - MEADOWS_USERNAME=${MEADOWS_USERNAME:-}
+      - MEADOWS_THEME=${MEADOWS_THEME:-auto}
+      - MEADOWS_LOG_LEVEL=${MEADOWS_LOG_LEVEL:-WARNING}
+      - MEADOWS_SYSTEM_NAME=${MEADOWS_SYSTEM_NAME:-MEADOWS Chat}
+    # To mint tokens locally inside the container, mount the server's secret and
+    # set MEADOWS_JWT_SECRET=/shared_keys/jwt.key + MEADOWS_USERNAME:
+    #   volumes:
+    #     - ../meadows-server/shared_keys:/shared_keys:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"

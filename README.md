@@ -36,6 +36,23 @@ MEADOWS_JWT_SECRET=secret MEADOWS_USERNAME=alice meadows-tui
 meadows-tui --server http://chat.example.com:8080 --token eyJ...
 ```
 
+### Run with Docker
+
+The image is built from the repo root (so `../meadows-protocol` and
+`../meadows-client` resolve — see `Dockerfile`) and tagged
+`remcoboerma/meadows-tui`. It's a CLI, so run it with a terminal attached:
+
+```bash
+docker compose build          # or: ew build
+docker run -it --network host -e MEADOWS_JWT=eyJ... remcoboerma/meadows-tui
+
+# flags work too (ENTRYPOINT is meadows-tui):
+docker run -it remcoboerma/meadows-tui --server http://chat.example.com:8080 --theme dark
+```
+
+`--network host` lets the default `http://localhost:8080` reach a server on the
+host; all `MEADOWS_*` env vars from the table below work unchanged.
+
 ## CLI Options
 
 | Option | Env Var | Default | Description |
