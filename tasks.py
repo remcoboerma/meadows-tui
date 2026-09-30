@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shlex
 import subprocess
 
 from invoke import Context, task
@@ -56,35 +57,6 @@ def setup(c: Context) -> None:
         default="MEADOWS Chat",
         comment="Display name shown in the TUI title bar",
     )
-
-
-@task(optional=["server", "token", "jwt_secret", "username", "theme", "log_level"])
-def tui(
-    c: Context,
-    server: str = "",
-    token: str = "",
-    jwt_secret: str = "",
-    username: str = "",
-    theme: str = "",
-    log_level: str = "",
-) -> None:
-    """Launch the TUI client."""
-    import subprocess
-
-    args = ["uv", "run", "meadows-tui"]
-    if server:
-        args.append(f"--server={server}")
-    if token:
-        args.append(f"--token={token}")
-    if jwt_secret:
-        args.append(f"--jwt-secret={jwt_secret}")
-    if username:
-        args.append(f"--username={username}")
-    if theme:
-        args.append(f"--theme={theme}")
-    if log_level:
-        args.append(f"--log-level={log_level}")
-    raise SystemExit(subprocess.run(args).returncode)
 
 
 @task
@@ -230,32 +202,78 @@ def _generate_user_token(username: str) -> str:
 
 # ── Tasks ────────────────────────────────────────────────────────────────
 
-@task(optional=["branch", "username", "debug"])
-def tui(c: Context, branch: str = "", username: str = "", debug: bool = False) -> None:
+@task(
+    optional=[
+        "branch",
+        "server",
+        "token",
+        "jwt_secret",
+        "username",
+        "theme",
+        "log_level",
+        "debug",
+    ]
+)
+def tui(
+    c: Context,
+    branch: str = "",
+    server: str = "",
+    token: str = "",
+    jwt_secret: str = "",
+    username: str = "",
+    theme: str = "",
+    log_level: str = "",
+    debug: bool = False,
+) -> None:
     """Launch the TUI client. Optionally switch git branch first.
 
+    This module used to define `tui` twice (a simple flag-passing launcher and
+    this branch-switching one); the second definition silently shadowed the
+    first, so --server/--token/--jwt-secret/--theme/--log-level were dead code.
+    They are merged here.
+
+    Auth precedence: --token wins; else --jwt-secret (+--username) lets the CLI
+    mint locally; otherwise a JWT is minted through the server's `inv user-jwt`
+    task for --username or $USER.
+
     Usage:
-        inv tui                            # interactive branch select, then TUI
+        inv tui                            # interactive branch select, mint JWT, TUI
         inv tui --branch=main              # skip branch prompt
         inv tui --branch=feat/foo --username=alice
+        inv tui --token eyJ... --server http://chat.example.com
+        inv tui --jwt-secret ./shared_keys/jwt.key --username alice --theme dark
         inv tui --debug                    # enable debug logging + diagnostics
     """
     selected = _select_branch(branch)
     if selected:
         _checkout_branch(selected)
 
-    user = username or os.environ.get("USER", "meadows-user")
-    print(f"Generating JWT for user '{user}' ...")
-    token = _generate_user_token(user)
+    args = ["uv", "run", "meadows-tui"]
+    if server:
+        args.append(f"--server={server}")
+    if token:
+        args.append(f"--token={token}")
+    elif jwt_secret:
+        args.append(f"--jwt-secret={jwt_secret}")
+        if username:
+            args.append(f"--username={username}")
+    else:
+        user = username or os.environ.get("USER", "meadows-user")
+        print(f"Generating JWT for user '{user}' ...")
+        args.append(f"--token={_generate_user_token(user)}")
 
-    server_url = os.environ.get("MEADOWS_SERVER_URL", "http://127.0.0.1:8080")
-
-    cmd = f"uv run python -m meadows.tui.cli --server {server_url} --token {token}"
+    if theme:
+        args.append(f"--theme={theme}")
+    if log_level:
+        args.append(f"--log-level={log_level}")
     if debug:
-        cmd += " --debug"
+        args.append("--debug")
 
+    # Same effective default as the CLI itself (click reads MEADOWS_SERVER_URL).
+    server_url = server or os.environ.get("MEADOWS_SERVER_URL", "http://127.0.0.1:8080")
     print(f"Launching TUI (server={server_url}) ...")
-    result = c.run(cmd, pty=True)
+    result = c.run(shlex.join(args), pty=True, warn=True)
+    raise SystemExit(result.returncode)
 
 
 __all__ = ["setup", "test", "lint", "fmt", "tui"]
