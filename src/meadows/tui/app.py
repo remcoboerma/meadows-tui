@@ -40,6 +40,67 @@ def hex_to_curses(hex_color: str, fallback: int = curses.COLOR_WHITE) -> int:
     return COLOR_MAP.get(hex_color, fallback)
 
 
+# ── wire-payload tolerance ────────────────────────────────────────────────
+#
+# BUSINESS RULE (client robustness): event *envelopes* are always dicts, but
+# the list entries inside them differ per server codebase:
+#   - meadows-server: `groups` = [GroupState.simplify() ...] → list[dict]
+#     with id/name/description/member_count (all commits of namespace.py);
+#   - chat.openit.chat (pre-migration monolith): `groups` =
+#     list(groups.keys()) → list[str] (webchat/sioserver.py, user flow);
+#   - BOT_AUTHENTICATED (both servers): `groups` = list[str] of group ids.
+# The TUI renders against servers it does not control, so it normalizes
+# entries once here instead of crashing in a handler with AttributeError
+# ('str' object has no attribute 'get'). See tests/test_tui.py
+# test_handle_authenticated_tolerates_string_entries.
+
+
+def _group_entries(raw: Any) -> dict[str, dict[str, Any]]:
+    """Normalize a `groups` payload into the `{group_id: summary}` sidebar map.
+
+    A bare id string becomes `{"id": id, "name": id}`; dicts keep their id or
+    group_id key. Unusable entries (no id, wrong type) are dropped rather than
+    stored under an empty key, because a group without an id cannot be joined.
+    """
+    if isinstance(raw, (str, dict)):
+        raw = [raw]
+    groups: dict[str, dict[str, Any]] = {}
+    for item in raw or []:
+        if isinstance(item, str):
+            groups[item] = {"id": item, "name": item}
+        elif isinstance(item, dict):
+            gid = item.get("id") or item.get("group_id") or ""
+            if gid:
+                groups[gid] = item
+    return groups
+
+
+def _bot_entries(raw: Any) -> list[dict[str, Any]]:
+    """Normalize a `bots` payload into a list of summaries (`{"name": ...}`)."""
+    if isinstance(raw, (str, dict)):
+        raw = [raw]
+    bots: list[dict[str, Any]] = []
+    for item in raw or []:
+        if isinstance(item, str):
+            bots.append({"name": item})
+        elif isinstance(item, dict):
+            bots.append(item)
+    return bots
+
+
+def _member_names(raw: Any) -> list[str]:
+    """Normalize a `members` payload into display names (username/user_id)."""
+    if isinstance(raw, (str, dict)):
+        raw = [raw]
+    names: list[str] = []
+    for item in raw or []:
+        if isinstance(item, str):
+            names.append(item)
+        elif isinstance(item, dict):
+            names.append(item.get("username") or item.get("user_id") or "")
+    return [name for name in names if name]
+
+
 class CursesApp:
     def __init__(self, config: TUIConfig) -> None:
         self._config = config
@@ -436,7 +497,7 @@ class CursesApp:
                 self._groups.pop(gid, None)
                 self._group_order = [g for g in self._group_order if g != gid]
             elif event == "members_updated":
-                self._users = [m.get("username", m.get("user_id", "")) for m in data.get("members", [])]
+                self._users = _member_names(data.get("members", []))
             elif event == "group_created":
                 gid = data.get("id", data.get("group_id", ""))
                 self._groups[gid] = data
@@ -447,7 +508,7 @@ class CursesApp:
                 self._groups.pop(gid, None)
                 self._group_order = [g for g in self._group_order if g != gid]
             elif event == "bot_list":
-                self._bots = data.get("bots", [])
+                self._bots = _bot_entries(data.get("bots", []))
             elif event == "message_removed":
                 mid = data.get("message_id", "")
                 if mid in self._msg_widgets:
@@ -462,13 +523,12 @@ class CursesApp:
 
     def _handle_authenticated(self, data: dict[str, Any]) -> None:
         self._screen = "chat"
-        groups = data.get("groups", [])
-        self._groups = {g.get("id", g.get("group_id", "")): g for g in groups}
+        self._groups = _group_entries(data.get("groups", []))
         self._group_order = list(self._groups.keys())
         self._current_group = self._group_order[0] if self._group_order else ""
         self._selected_group_idx = 0
         self._users = []
-        self._bots = data.get("bots", [])
+        self._bots = _bot_entries(data.get("bots", []))
         if self._current_group:
             self._run_async(self._bridge.join_group(self._current_group))
 
@@ -534,7 +594,7 @@ class CursesApp:
         self._typing_users = []
 
         members = data.get("members", [])
-        self._users = [m.get("username", m.get("user_id", "")) for m in members]
+        self._users = _member_names(members)
 
         thread = data.get("thread", [])
         for msg in thread:

@@ -281,6 +281,74 @@ class TestCursesApp:
         assert app._current_group == "general"
         assert len(app._bots) == 1
 
+    def test_handle_authenticated_tolerates_string_entries(self) -> None:
+        """BUSINESS RULE (wire tolerance): `groups`/`bots` entries may be bare
+        id strings (older/hosted servers, BOT_AUTHENTICATED's list[str]) — the
+        TUI must normalize them instead of dying with AttributeError on
+        'str'.get (regression: docker run remcoboerma/meadows-tui --token ...)."""
+        from meadows.tui.app import CursesApp
+
+        config = TUIConfig(theme="dark")
+        app = CursesApp(config)
+
+        app._handle_authenticated(
+            {
+                "user_id": "user-alice",
+                "username": "alice",
+                "groups": ["general", "random"],
+                "bots": ["echo"],
+            }
+        )
+        assert app._screen == "chat"
+        assert set(app._groups) == {"general", "random"}
+        assert app._groups["general"] == {"id": "general", "name": "general"}
+        assert app._group_order[0] == "general"
+        assert app._current_group == "general"
+        assert app._bots == [{"name": "echo"}]
+
+    def test_handle_authenticated_drops_unusable_group_entries(self) -> None:
+        """BUSINESS RULE (wire tolerance): entries without an id cannot be
+        joined, and non-dict/non-str junk must not crash the handler."""
+        from meadows.tui.app import CursesApp
+
+        config = TUIConfig(theme="dark")
+        app = CursesApp(config)
+
+        app._handle_authenticated(
+            {"groups": [{"name": "no-id"}, 42, {"id": "g1", "name": "G1"}, "g2"]}
+        )
+        assert set(app._groups) == {"g1", "g2"}
+        assert app._groups["g1"]["name"] == "G1"
+
+    def test_event_queue_tolerates_string_members_and_bots(self) -> None:
+        """BUSINESS RULE (wire tolerance): members_updated / bot_list entries
+        render from dicts OR bare usernames/bot names."""
+        from meadows.tui.app import CursesApp
+
+        config = TUIConfig(theme="dark")
+        app = CursesApp(config)
+
+        app._event_queue.put(("members_updated", {"members": ["alice", {"username": "bob"}]}))
+        app._event_queue.put(("bot_list", {"bots": ["echo", {"name": "summarizer"}]}))
+        app._handle_events()
+
+        assert app._users == ["alice", "bob"]
+        assert app._bots == [{"name": "echo"}, {"name": "summarizer"}]
+
+    def test_joined_group_tolerates_string_members(self) -> None:
+        """BUSINESS RULE (wire tolerance): joined_group history members may be
+        bare usernames."""
+        from meadows.tui.app import CursesApp
+
+        config = TUIConfig(theme="dark")
+        app = CursesApp(config)
+
+        app._handle_joined_group(
+            {"group_id": "general", "members": ["alice", {"user_id": "user-bob"}], "thread": []}
+        )
+        assert app._current_group == "general"
+        assert app._users == ["alice", "user-bob"]
+
     def test_handle_message_adds_to_current_group(self) -> None:
         from meadows.tui.app import CursesApp
 
